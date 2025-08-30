@@ -11,23 +11,92 @@ const ImageDetail = ({ video_id, frame_id, setNearbyScreenInfo }) => {
 
     const [currentFrame, setCurrentFrame] = useState(frame_id);
     const [fps, setFps] = useState(25);
+    const [keyframeId, setKeyframeId] = useState('');
     const videoRef = useRef(null);
-    const [videoSrc, setVideoSrc] = useState(`${import.meta.env.VITE_VIDEO_URL}/${video_id}.mp4`);
+    const [youtubeUrl, setYoutubeUrl] = useState('');
     const [ans, setAns] = useState('');
     const [sessionId, setSessionId] = useState('');
     const [evaluationId, setEvaluationId] = useState('');
     const [currentTime, setCurrentTime] = useState(0);
+    const [keyframesData, setKeyframesData] = useState([]);
+    const [fpsData, setFpsData] = useState([]);
+    const [youtubeData, setYoutubeData] = useState([]);
+    const [imageDimensions, setImageDimensions] = useState({ width: 0, height: 0 });
+    const [youtubeEmbedUrl, setYoutubeEmbedUrl] = useState('');
 
     const frameToTime = (frame) => frame / fps;
     const timeToFrame = (time) => Math.floor(time * fps);
 
-    const handleVideoError = () => {
-        setVideoSrc(`${import.meta.env.VITE_VIDEO_ERROR_URL}/${video_id}.mp4`);
+    const handleImageError = (e) => {
+        e.target.src = `${import.meta.env.VITE_KEYFRAME_ERROR_URL}/${video_id}/${currentFrame}.jpg`;
     };
 
-    const handleImageError = (e) => {
-        e.target.src = `${import.meta.env.VITE_KEYFRAME_ERROR_URL}/${img.video_id}/${img.frame_id}.jpg`;
+    // Hàm xác định kích thước ảnh
+    const handleImageLoad = (e) => {
+        const img = e.target;
+        setImageDimensions({
+            width: img.naturalWidth,
+            height: img.naturalHeight
+        });
     };
+
+    // Fetch dữ liệu keyframe_id, fps và youtube URL từ JSON sử dụng import
+    useEffect(() => {
+        const fetchData = async () => {
+            try {
+                // Import keyframe_id data
+                const keyframeResponse = await import(`../../../../data/keyframe_id/${video_id}.json`);
+                setKeyframesData(keyframeResponse.default?.listImages || []);
+                
+                // Import fps data
+                const fpsResponse = await import(`../../../../data/fps/${video_id}.json`);
+                setFpsData(fpsResponse.default?.listImages || []);
+                
+                // Import youtube URL data
+                const youtubeResponse = await import(`../../../../data/video/${video_id}.json`);
+                setYoutubeData(youtubeResponse.default?.listImages || []);
+                
+                // Lấy URL YouTube đầu tiên (nếu có)
+                if (youtubeResponse.default?.listImages?.length > 0) {
+                    setYoutubeUrl(youtubeResponse.default.listImages[0]);
+                }
+            } catch (error) {
+                console.error("Error loading JSON data:", error);
+            }
+        };
+
+        if (video_id) {
+            fetchData();
+        }
+    }, [video_id]);
+
+    // Cập nhật keyframe_id và fps khi currentFrame thay đổi
+    useEffect(() => {
+        if (keyframesData.length > 0 && fpsData.length > 0) {
+            const frameIndex = parseInt(currentFrame, 10) - 1;
+            
+            if (frameIndex >= 0 && frameIndex < keyframesData.length) {
+                setKeyframeId(keyframesData[frameIndex]);
+            }
+            
+            if (frameIndex >= 0 && frameIndex < fpsData.length) {
+                setFps(fpsData[frameIndex]);
+            }
+        }
+    }, [currentFrame, keyframesData, fpsData]);
+
+    // Cập nhật YouTube embed URL khi currentFrame hoặc youtubeUrl thay đổi
+    useEffect(() => {
+        if (youtubeUrl) {
+            const videoId = extractYoutubeVideoId(youtubeUrl);
+            if (videoId) {
+                // Sửa lỗi: sử dụng currentFrame thay vì keyframeId
+                const timeInSeconds = frameToMilliseconds(keyframeId, fps) / 1000;
+                const newEmbedUrl = `https://www.youtube.com/embed/${videoId}?autoplay=1&start=${Math.floor(timeInSeconds)}&mute=1`;
+                setYoutubeEmbedUrl(newEmbedUrl);
+            }
+        }
+    }, [currentFrame, fps, youtubeUrl, keyframeId]); // Thêm keyframeId vào dependencies
 
     const submitAnswer = () => {
         if (!sessionId || !evaluationId) {
@@ -35,7 +104,8 @@ const ImageDetail = ({ video_id, frame_id, setNearbyScreenInfo }) => {
             return;
         }
 
-        const videoCurrentTimeMs = videoRef.current ? videoRef.current.currentTime * 1000 : 0;
+        // Sửa lỗi: sử dụng currentFrame thay vì keyframeId
+        const videoCurrentTimeMs = frameToMilliseconds(keyframeId, fps);
         const url = `https://eventretrieval.one/api/v2/submit/${evaluationId}?session=${sessionId}`;
         
         const body = ans ? {
@@ -86,23 +156,6 @@ const ImageDetail = ({ video_id, frame_id, setNearbyScreenInfo }) => {
         });
     };
 
-    // useEffect(() => {
-    //     loginDres(setSessionId, setEvaluationId);
-    // }, []);
-
-    useEffect(() => {
-        if (videoRef.current) {
-            videoRef.current.load();
-        }
-    }, [videoSrc]);
-
-    useEffect(() => {
-        if (videoRef.current) {
-            const timeInSeconds = frameToTime(currentFrame);
-            videoRef.current.currentTime = timeInSeconds;
-        }
-    }, [currentFrame, fps]);
-
     useEffect(() => {
         const updateCurrentTime = () => {
             if (videoRef.current) {
@@ -110,10 +163,14 @@ const ImageDetail = ({ video_id, frame_id, setNearbyScreenInfo }) => {
             }
         };
 
-        videoRef.current?.addEventListener('timeupdate', updateCurrentTime);
+        if (videoRef.current) {
+            videoRef.current.addEventListener('timeupdate', updateCurrentTime);
+        }
 
         return () => {
-            videoRef.current?.removeEventListener('timeupdate', updateCurrentTime);
+            if (videoRef.current) {
+                videoRef.current.removeEventListener('timeupdate', updateCurrentTime);
+            }
         };
     }, []);
 
@@ -151,34 +208,68 @@ const ImageDetail = ({ video_id, frame_id, setNearbyScreenInfo }) => {
     };
 
     function frameToMilliseconds(frameId, fps) {
-        return Math.floor((frameId * 1000) / fps);
+        return Math.floor((parseInt(frameId, 10) * 1000) / fps);
     }
+
+    // Xác định class cho ảnh dựa trên tỷ lệ khung hình
+    const getImageClass = () => {
+        if (imageDimensions.width === 0 || imageDimensions.height === 0) {
+            return "max-w-[45%] max-h-full object-contain mb-5";
+        }
+        
+        const aspectRatio = imageDimensions.width / imageDimensions.height;
+        
+        // Nếu ảnh dọc (chiều cao > chiều rộng)
+        if (aspectRatio < 1) {
+            return "max-h-[300px] max-w-full object-contain mb-5";
+        }
+        
+        // Nếu ảnh ngang
+        return "max-w-[45%] max-h-full object-contain mb-5";
+    };
+
+    // Hàm trích xuất video ID từ URL YouTube
+    const extractYoutubeVideoId = (url) => {
+        if (!url) return null;
+        
+        const regExp = /^.*(youtu.be\/|v\/|u\/\w\/|embed\/|watch\?v=|\&v=)([^#\&\?]*).*/;
+        const match = url.match(regExp);
+        
+        return (match && match[2].length === 11) ? match[2] : null;
+    };
 
     return (
         <div className="fixed inset-0 flex items-center justify-center bg-black bg-opacity-50 z-50 rounded-2xl">
-            <div className="bg-white rounded flex flex-col text-center items-center w-2/3 h-4/5">
-                <p className="my-2 text-lg">{video_id}, {currentFrame}, {frameToMilliseconds(currentFrame, fps)}</p>
+            <div className="bg-white rounded flex flex-col text-center items-center w-2/3 h-4/5 overflow-y-auto p-4">
+                <p className="my-2 text-lg">
+                    {video_id}, Frame: {currentFrame}, Time: {frameToMilliseconds(keyframeId, fps)}ms, 
+                    Keyframe: {keyframeId}, FPS: {fps}
+                </p>
 
                 <div className="w-full flex flex-row p-2 justify-around items-stretch h-[350px]">
-                    {/* <video
-                        key={videoSrc}
-                        ref={videoRef}
-                        controls
-                        className="w-[45%] h-full object-cover mb-5"
-                    onError={handleVideoError}
-                    >
-                    <source src={videoSrc} type="video/mp4" />
-                    Your browser does not support the video tag.
-                    </video> */}
-
                     <img
                         src={`${import.meta.env.VITE_KEYFRAME_URL}/${video_id}/${currentFrame}.jpg`}
                         alt="Detailed view"
-                        className="w-[45%] h-full object-cover mb-5"
+                        className={getImageClass()}
                         onError={handleImageError}
+                        onLoad={handleImageLoad}
                     />
+                    
+                    {youtubeEmbedUrl && (
+                        <div className="w-[45%] h-full mb-5">
+                            <iframe
+                                key={youtubeEmbedUrl} // Thêm key để force re-render khi URL thay đổi
+                                width="100%"
+                                height="100%"
+                                src={youtubeEmbedUrl}
+                                title="YouTube video player"
+                                frameBorder="0"
+                                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                                allowFullScreen
+                            ></iframe>
+                        </div>
+                    )}
                 </div>
-
 
                 <NearbyList
                     video_id={video_id}
@@ -186,8 +277,8 @@ const ImageDetail = ({ video_id, frame_id, setNearbyScreenInfo }) => {
                     setCurrentFrame={setCurrentFrame}
                 />
 
-                <div className="flex w-full mt-4 items-center">
-                    <div className="flex-1 flex items-center justify-center space-x-3">
+                <div className="flex w-full mt-4 items-center justify-center">
+                    <div className="flex items-center justify-center space-x-3">
                         <div className="mr-4 text-lg">
                             Thời gian: {formatTime(currentTime)}
                         </div>
@@ -196,7 +287,7 @@ const ImageDetail = ({ video_id, frame_id, setNearbyScreenInfo }) => {
                             placeholder="Answer (optional)"
                             value={ans}
                             onChange={(e) => setAns(e.target.value)}
-                            className="flex-grow py-2 px-4 border border-gray-500 max-w-xs"
+                            className="py-2 px-4 border border-gray-500 max-w-xs"
                         />
                         <button
                             onClick={submitAnswer}
@@ -205,36 +296,35 @@ const ImageDetail = ({ video_id, frame_id, setNearbyScreenInfo }) => {
                             Submit Answer
                         </button>
                     </div>
-                    
                 </div>
 
-                <button
-                    onClick={toggleFps}
-                    className="mt-4 py-2 px-4 border border-green-500 text-green-500 hover:bg-green-500 hover:text-white transition-colors"
-                >
-                    {fps === 25 ? "Switch to 30 FPS" : "Switch to 25 FPS"}
-                </button>
+                <div className="flex space-x-4 mt-4">
+                    <button
+                        onClick={toggleFps}
+                        className="py-2 px-4 border border-green-500 text-green-500 hover:bg-green-500 hover:text-white transition-colors"
+                    >
+                        {fps === 25 ? "Switch to 30 FPS" : "Switch to 25 FPS"}
+                    </button>
 
-                <button
-                    onClick={convertCurrentTimeToFrame}
-                    className="mt-4 py-2 px-4 border border-orange-500 text-orange-500 hover:bg-orange-500 hover:text-white transition-colors"
-                >
-                    Convert Current Time to Frame ID
-                </button>
+                    <button
+                        onClick={convertCurrentTimeToFrame}
+                        className="py-2 px-4 border border-orange-500 text-orange-500 hover:bg-orange-500 hover:text-white transition-colors"
+                    >
+                        Convert Current Time to Frame ID
+                    </button>
 
-                <button
-                    onClick={closeImage}
-                    className="mt-4 py-2 px-4 border border-blue-500 text-blue-500 hover:bg-blue-500 hover:text-white transition-colors"
-                >
-                    Close
-                </button>
+                    <button
+                        onClick={closeImage}
+                        className="py-2 px-4 border border-blue-500 text-blue-500 hover:bg-blue-500 hover:text-white transition-colors"
+                    >
+                        Close
+                    </button>
+                </div>
 
                 <ToastContainer />
             </div>
         </div>
     );
 };
-
-
 
 export default ImageDetail;
